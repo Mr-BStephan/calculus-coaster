@@ -1,4 +1,4 @@
-/* Calculus Coaster Simulator v3.2 — Chromebook Deployment Build
+/* Calculus Coaster Simulator v3.2.1 — Chromebook Deployment Build
    Teacher-editable constants are grouped here.
 */
 const COURSE_LENGTH = 100;       // meters
@@ -332,6 +332,8 @@ function evaluateConstantExpression(expr) {
 function normalizeExpression(raw) {
   let s = raw.trim();
   s = s.replace(/\\left|\\right/g, "");
+  s = s.replace(/\\\{/g, "{").replace(/\\\}/g, "}");
+  s = s.replace(/\\</g, "<").replace(/\\>/g, ">");
   s = replaceLatexFrac(s);
   s = replaceLatexSqrt(s);
 
@@ -364,27 +366,38 @@ function normalizeExpression(raw) {
 }
 
 function extractDomain(line) {
-  let s = line.trim().replace(/\\left|\\right/g, "");
+  let s = line.trim();
+
+  // Direct Desmos clipboard text often looks like:
+  // x+4\left\{-4<x<5\right\}
+  // Normalize the visual sizing commands and escaped braces first.
+  s = s.replace(/\\left|\\right/g, "");
+  s = s.replace(/\\\{/g, "{").replace(/\\\}/g, "}");
+
+  // Desmos / LaTeX comparison commands.
   s = s.replace(/\\leq?/g, "<=").replace(/\\geq?/g, ">=");
   s = s.replace(/≤/g, "<=").replace(/≥/g, ">=");
 
-  // Prefer a final brace group that contains x and an inequality.
-  const matches = [...s.matchAll(/\\?\{([^{}]*)\\?\}/g)];
+  // Some clipboard paths also escape literal < and >.
+  s = s.replace(/\\</g, "<").replace(/\\>/g, ">");
+
+  const matches = [...s.matchAll(/\{([^{}]*)\}/g)];
   let chosen = null;
   for (const m of matches) {
     if (/x/i.test(m[1]) && /(<=|>=|<|>)/.test(m[1])) chosen = m;
   }
+
   if (!chosen) {
     throw new Error(`Missing a Desmos domain restriction in:\n${line}\nUse a restriction like {0<=x<=20}.`);
   }
 
   const domainText = chosen[1].replace(/\s+/g, "");
-  const equationPart = (s.slice(0, chosen.index) + s.slice(chosen.index + chosen[0].length)).trim();
+  const equationPart =
+    (s.slice(0, chosen.index) + s.slice(chosen.index + chosen[0].length)).trim();
 
   let min = -Infinity, max = Infinity;
   let minInclusive = true, maxInclusive = true;
 
-  // a <= x <= b (also reversed > chains)
   let m = domainText.match(/^(.+?)(<=|<)x(<=|<)(.+)$/i);
   if (m) {
     min = Number(evaluateConstantExpression(normalizeExpression(m[1])));
@@ -403,27 +416,38 @@ function extractDomain(line) {
     return { equationPart, min, max, minInclusive, maxInclusive, raw: domainText };
   }
 
-  // Two conditions separated by comma or "and".
   const parts = domainText.split(/,|and/i);
   for (const part of parts) {
     let q = part.match(/^x(<=|<|>=|>)(.+)$/i);
     if (q) {
       const val = Number(evaluateConstantExpression(normalizeExpression(q[2])));
-      if (q[1].startsWith("<")) { max = val; maxInclusive = q[1] === "<="; }
-      else { min = val; minInclusive = q[1] === ">="; }
+      if (q[1].startsWith("<")) {
+        max = val;
+        maxInclusive = q[1] === "<=";
+      } else {
+        min = val;
+        minInclusive = q[1] === ">=";
+      }
       continue;
     }
+
     q = part.match(/^(.+?)(<=|<|>=|>)x$/i);
     if (q) {
       const val = Number(evaluateConstantExpression(normalizeExpression(q[1])));
-      if (q[2].startsWith("<")) { min = val; minInclusive = q[2] === "<="; }
-      else { max = val; maxInclusive = q[2] === ">="; }
+      if (q[2].startsWith("<")) {
+        min = val;
+        minInclusive = q[2] === "<=";
+      } else {
+        max = val;
+        maxInclusive = q[2] === ">=";
+      }
     }
   }
 
   if (!Number.isFinite(min) || !Number.isFinite(max)) {
     throw new Error(`Could not read the domain restriction "${domainText}". Try {0<=x<=20}.`);
   }
+
   return { equationPart, min, max, minInclusive, maxInclusive, raw: domainText };
 }
 
