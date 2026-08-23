@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Calculus Coaster Simulator</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <div>
+      <p class="eyebrow">AP Calculus AB • Mr. Stephan</p>
+      <h1>Calculus Coaster Simulator</h1>
+      <p class="subtitle">Design in Desmos. Paste the restricted functions here. Then test the calculus and physics.</p>
+    </div>
+    <div class="course-badge">
+      <strong>Fixed Course</strong>
+      <span id="courseSize">100 m long × 40 m high</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="panel input-panel">
+      <div class="section-heading">
+        <div>
+          <h2>1. Paste Desmos track pieces</h2>
+          <p>One restricted function per line. Explicit functions only: <strong>y = f(x)</strong>. No vertical pieces.</p>
+        </div>
+        <div class="example-loader">
+          <select id="exampleSelect" aria-label="Choose an example coaster">
+            <option value="working">Working coaster</option>
+            <option value="nondifferentiable">Continuous, not differentiable</option>
+            <option value="highG">Too much G-force</option>
+            <option value="pendulum">Pendulum / reversal</option>
+            <option value="discontinuous">Discontinuous / derails</option>
+            <option value="airborne">Loses contact / airborne</option>
+            <option value="endsEarly">Track ends early</option>
+          </select>
+          <button id="exampleBtn" class="secondary" type="button">Load example</button>
+        </div>
+      </div>
+
+      <textarea id="equations" spellcheck="false" placeholder="Example:
+y=35-0.02(x-20)^2 {0<=x<=40}
+y=... {40<=x<=70}"></textarea>
+
+      <div class="hint">
+        <strong>Desmos paste support:</strong> common LaTeX-style input such as
+        <code>\sin(x)</code>, <code>\sqrt{x}</code>, <code>\frac{1}{x}</code>,
+        <code>\pi</code>, and restrictions like <code>\{0\le x\le 20\}</code>.
+      </div>
+
+      <div class="controls">
+        <button id="analyzeBtn" class="primary">Analyze Track</button>
+      </div>
+      <div id="parseError" class="error hidden"></div>
+    </section>
+
+    <section class="sim-grid" id="projectorArea">
+      <div class="panel graph-panel">
+        <div class="section-heading compact ride-heading">
+          <div class="ride-title-block">
+            <h2>2. Ride Simulation</h2>
+            <p id="statusText">Analyze a track to begin.</p>
+          </div>
+          <div id="warningBanner" class="warning-banner hidden" role="status" aria-live="polite"></div>
+        </div>
+
+        <canvas id="coasterCanvas" width="1000" height="500"></canvas>
+
+        <div class="playback-toolbar" aria-label="Ride playback controls and display settings">
+          <div class="playback-actions">
+            <button id="runBtn" class="primary toolbar-button" type="button" disabled>▶ Run Coaster</button>
+            <button id="resetBtn" class="secondary toolbar-button" type="button">↺ Reset</button>
+            <button id="fullscreenBtn" class="mini-control fullscreen-control toolbar-button" type="button">⛶ Full Screen</button>
+          </div>
+
+          <div class="playback-settings">
+            <label class="toolbar-slider" for="cartSizeSlider">
+              <span>Cart size</span>
+              <input id="cartSizeSlider" type="range" min="0.7" max="2.2" step="0.1" value="1" />
+              <output id="cartSizeReadout" for="cartSizeSlider">1.0×</output>
+            </label>
+
+            <label class="toolbar-slider" for="timeScale">
+              <span>Animation speed</span>
+              <input id="timeScale" type="range" min="0.2" max="1.2" step="0.1" value="0.55" />
+              <output id="animationSpeedReadout" for="timeScale">0.55×</output>
+            </label>
+          </div>
+        </div>
+
+        <div class="scrub-panel" aria-label="Ride playback position">
+          <div class="scrub-topline">
+            <div>
+              <strong>Live Playback / Inspect Track</strong>
+              <span>Drag through the ride to replay warnings, jolts, and other track events.</span>
+            </div>
+            <output id="scrubReadout" for="scrubSlider">x = 0.0 m</output>
+          </div>
+          <input id="scrubSlider" type="range" min="0" max="100" step="0.05" value="0"
+                 aria-label="Inspect horizontal position on the coaster" disabled />
+          <div class="scrub-labels">
+            <span>Start</span>
+            <span id="scrubMiddle">50 m</span>
+            <span id="scrubEnd">100 m</span>
+          </div>
+        </div>
+
+
+      </div>
+
+      <aside class="panel telemetry-panel">
+        <h2>Live Telemetry</h2>
+        <div class="telemetry">
+          <div><span>Position</span><strong id="xReadout">—</strong></div>
+          <div><span>Height</span><strong id="heightReadout">—</strong></div>
+          <div><span>Speed</span><strong id="speedReadout">—</strong></div>
+          <div><span>Slope f′(x)</span><strong id="slopeReadout">—</strong></div>
+          <div><span>G-force felt</span><strong id="gReadout">—</strong></div>
+        </div>
+
+        <div class="energy-card">
+          <h3>Mechanical Energy</h3>
+          <div class="energy-row"><span>Potential</span><div class="bar"><i id="peBar"></i></div></div>
+          <div class="energy-row"><span>Kinetic</span><div class="bar"><i id="keBar"></i></div></div>
+        </div>
+
+        <div class="legend">
+          <span><i class="dot good"></i> passes</span>
+          <span><i class="dot caution"></i> warning</span>
+          <span><i class="dot bad"></i> failure</span>
+        </div>
+      </aside>
+    </section>
+
+    <section class="panel report-panel">
+      <div class="section-heading">
+        <div>
+          <h2>3. Calculus & Engineering Report</h2>
+          <p>Tiny numerical/rounding differences are handled with a tolerance, but the actual mismatch is still reported.</p>
+        </div>
+      </div>
+
+      <div class="summary-cards">
+        <div class="summary-card" id="continuousCard"><span>Continuity</span><strong>—</strong></div>
+        <div class="summary-card" id="smoothCard"><span>Differentiability</span><strong>—</strong></div>
+        <div class="summary-card" id="extremaCard"><span>Interior extrema</span><strong>—</strong></div>
+        <div class="summary-card" id="completionCard"><span>Energy check</span><strong>—</strong></div>
+        <div class="summary-card" id="maxSpeedCard"><span>Maximum speed</span><strong>—</strong></div>
+        <div class="summary-card" id="maxGCard"><span>Predicted max G</span><strong>—</strong></div>
+      </div>
+
+      <div id="report"></div>
+    </section>
+  </main>
+
+  <footer>
+    <span>Physics model: gravity + conservation of mechanical energy; no friction or air resistance.</span>
+    <span>Version 3.2</span>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
