@@ -1,10 +1,11 @@
-/* Calculus Coaster Simulator v3.2.1 — Chromebook Deployment Build
+/* Calculus Coaster Simulator v3.4 — Chromebook Deployment Build
    Teacher-editable constants are grouped here.
 */
 const COURSE_LENGTH = 100;       // meters
 const MAX_HEIGHT = 40;           // meters
 const MIN_HEIGHT = 0;            // meters
 const INITIAL_SPEED = 1.5;       // m/s
+const LIFT_SPEED = 3.0;          // m/s on a powered lift-hill section marked with trailing L
 const G = 9.81;                  // m/s^2
 const CAT_PASS_OUT_G = 4.0;      // if felt G-force reaches this, the cat "passes out"
 const UNDEFINED_G_FLASH_TIME = 0.9; // seconds to display UNDEFINED after a cusp/corner
@@ -72,6 +73,13 @@ const examples = {
 
   endsEarly: [
     "y=30-0.2x {0<=x<=60}"
+  ].join("\n"),
+
+  liftHill: [
+    "y=5+0.6x {0<=x<=40} L",
+    "y=29-16*(3*((x-40)/25)^2-2*((x-40)/25)^3) {40<=x<=65}",
+    "y=13+10*(3*((x-65)/20)^2-2*((x-65)/20)^3) {65<=x<=85}",
+    "y=23-6*(3*((x-85)/15)^2-2*((x-85)/15)^3) {85<=x<=100}"
   ].join("\n")
 };
 
@@ -454,7 +462,10 @@ function extractDomain(line) {
 function parseLine(line, index) {
   const domain = extractDomain(line);
   if (!(domain.max > domain.min)) throw new Error(`Piece ${index + 1} has an invalid domain.`);
-  const expr = normalizeExpression(domain.equationPart);
+  let equationPart = domain.equationPart.trim();
+  const isLift = /\bL\s*$/i.test(equationPart);
+  if (isLift) equationPart = equationPart.replace(/\bL\s*$/i, "").trim();
+  const expr = normalizeExpression(equationPart);
   let compiled;
   try {
     compiled = compileSafeExpression(expr);
@@ -467,6 +478,7 @@ function parseLine(line, index) {
     index,
     raw: line,
     expr,
+    isLift,
     min: domain.min,
     max: domain.max,
     compiled,
@@ -526,9 +538,17 @@ function inspectPieceIndex(x) {
   return -1;
 }
 
-function speedFromHeight(y, y0) {
-  const v2 = INITIAL_SPEED*INITIAL_SPEED + 2*G*(y0 - y);
+function energyHeightFromState(y, speed) {
+  return y + (speed * speed) / (2 * G);
+}
+
+function speedFromEnergyHeight(y, energyHeight) {
+  const v2 = 2 * G * (energyHeight - y);
   return v2 >= 0 ? Math.sqrt(v2) : NaN;
+}
+
+function speedFromHeight(y, y0) {
+  return speedFromEnergyHeight(y, energyHeightFromState(y0, INITIAL_SPEED));
 }
 
 function normalG(piece, x, speed) {
@@ -571,6 +591,11 @@ function analyzeTrack() {
     pieces = lines.map(parseLine).sort((a,b) => a.min - b.min);
   } catch (err) {
     showError(err.message);
+    return;
+  }
+
+  if (pieces.some((p, i) => p.isLift && i !== 0)) {
+    showError('The lift-hill marker "L" is only allowed on the first track piece.');
     return;
   }
 
@@ -622,6 +647,12 @@ function analyzeTrack() {
   let samplePoints = [];
 
   const y0 = pieces[0].eval(pieces[0].min);
+  const hasLift = !!pieces[0].isLift;
+  const liftEndX = hasLift ? pieces[0].max : null;
+  const liftReleaseY = hasLift ? pieces[0].eval(pieces[0].max) : null;
+  const energyHeight = hasLift
+    ? energyHeightFromState(liftReleaseY, LIFT_SPEED)
+    : energyHeightFromState(y0, INITIAL_SPEED);
 
   // Sample each piece independently so derivatives stay on their own formula.
   for (const p of pieces) {
@@ -634,20 +665,21 @@ function analyzeTrack() {
       minY = Math.min(minY, y);
       maxY = Math.max(maxY, y);
 
-      const v = speedFromHeight(y, y0);
-      const sample = {x, y, piece:p, speed:v, ng:NaN};
+      const onLift = hasLift && p.index === 0;
+      const v = onLift ? LIFT_SPEED : speedFromEnergyHeight(y, energyHeight);
+      const sample = {x, y, piece:p, speed:v, ng:NaN, onLift};
       samplePoints.push(sample);
 
       if (!Number.isFinite(v)) {
-        if (energyOK) firstEnergyFailure = {x,y};
-        energyOK = false;
+        if (!onLift && energyOK) firstEnergyFailure = {x,y};
+        if (!onLift) energyOK = false;
       } else {
         maxSpeed = Math.max(maxSpeed, v);
         const ng = normalG(p, x, v);
         sample.ng = ng;
         maxPredG = Math.max(maxPredG, ng);
         minPredG = Math.min(minPredG, ng);
-        if (!firstContactLoss && ng < -CONTACT_G_EPS && x > p.min + 0.03 && x < p.max - 0.03) {
+        if (!onLift && !firstContactLoss && ng < -CONTACT_G_EPS && x > p.min + 0.03 && x < p.max - 0.03) {
           firstContactLoss = {x,y,ng};
         }
       }
@@ -685,7 +717,8 @@ function analyzeTrack() {
   analysis = {
     joints, continuous, smooth, coverageOK, minY, maxY, heightOK, extrema, extremaOK,
     y0, energyOK, firstEnergyFailure, maxSpeed, maxPredG, minPredG, firstContactLoss,
-    predictedComplete, samplePoints, singlePieceEndsEarly
+    predictedComplete, samplePoints, singlePieceEndsEarly,
+    hasLift, liftEndX, liftReleaseY, liftSpeed: hasLift ? LIFT_SPEED : null, energyHeight
   };
 
   renderReport();
@@ -715,6 +748,17 @@ function renderReport() {
 
   const gClass = a.maxPredG <= 4 && a.minPredG >= 0 ? "pass" : (a.firstContactLoss ? "fail" : "warn");
   classifyCard("maxGCard", Number.isFinite(a.maxPredG) ? `${fmt(a.maxPredG,2)} g` : "—", gClass);
+
+  if (a.hasLift) {
+    addReportRow(
+      "pass",
+      "Lift hill enabled",
+      `Piece 1 is a powered lift hill. The chain pulls the cart at ${fmt(a.liftSpeed,1)} m/s until x=${fmt(a.liftEndX,1)} m, then releases it to coast under gravity.`,
+      `L @ ${fmt(a.liftSpeed,1)} m/s`
+    );
+  } else {
+    addReportRow("warn", "No lift hill", `The cart starts with the default initial speed of ${fmt(INITIAL_SPEED,1)} m/s, so the first section must already be physically reachable.`);
+  }
 
   if (a.coverageOK) {
     addReportRow("pass", "Course length covered", `Track begins at x=0 and ends at x=${COURSE_LENGTH}.`);
@@ -826,14 +870,15 @@ function resetRide() {
     state: "track",
     x: p.min,
     y: p.eval(p.min),
-    speed: INITIAL_SPEED,
+    speed: p.isLift ? LIFT_SPEED : INITIAL_SPEED,
     vx: 0, vy: 0,
-    message: "",
+    message: p.isLift ? "Lift hill" : "",
     pieceIndex: 0,
     direction: 1,
     catPassedOut: false,
     undefinedGTimer: 0,
     joltTimer: 0,
+    energyHeight: analysis.energyHeight,
     crossedJoints: new Set()
   };
   lastInspectX = ride.x;
@@ -963,7 +1008,7 @@ function launchFromTrack(label) {
 }
 
 function reachableHeight() {
-  return analysis.y0 + (INITIAL_SPEED * INITIAL_SPEED) / (2 * G);
+  return Number.isFinite(ride?.energyHeight) ? ride.energyHeight : energyHeightFromState(analysis.y0, INITIAL_SPEED);
 }
 
 function findTurningX(piece, xA, xB) {
@@ -1064,7 +1109,76 @@ function stepTrack(dt) {
     return;
   }
 
-  let v = speedFromHeight(y, analysis.y0);
+  if (p.isLift) {
+    ride.direction = 1;
+    ride.message = "Lift hill";
+    ride.speed = LIFT_SPEED;
+    ride.x = x;
+    ride.y = y;
+    el("statusText").textContent = `Lift hill pulling the cart upward at ${fmt(LIFT_SPEED,1)} m/s…`;
+
+    const slope = derivative(p, x);
+    const dxdt = LIFT_SPEED / Math.sqrt(1 + slope * slope);
+    const nextX = x + dxdt * dt;
+
+    if (nextX < p.max - 1e-6) {
+      ride.x = nextX;
+      ride.y = p.eval(nextX);
+      return;
+    }
+
+    ride.x = p.max;
+    ride.y = p.eval(p.max);
+    ride.speed = LIFT_SPEED;
+    ride.energyHeight = energyHeightFromState(ride.y, LIFT_SPEED);
+
+    if (i < pieces.length - 1) {
+      const joint = analysis.joints[i];
+      if (!joint || !joint.cOK) {
+        launchFromTrack("DERAILED");
+        return;
+      }
+
+      const nextPiece = pieces[i + 1];
+      ride.crossedJoints.add(i);
+
+      if (!joint.dOK) {
+        handleNonDifferentiableJoint(
+          joint,
+          i + 1,
+          nextPiece.min,
+          nextPiece.eval(nextPiece.min)
+        );
+        ride.energyHeight = energyHeightFromState(ride.y, LIFT_SPEED);
+        ride.speed = LIFT_SPEED;
+        return;
+      }
+
+      ride.pieceIndex = i + 1;
+      ride.x = nextPiece.min;
+      ride.y = nextPiece.eval(nextPiece.min);
+      ride.speed = LIFT_SPEED;
+      return;
+    }
+
+    if (p.max < COURSE_LENGTH - X_JOINT_TOL) {
+      const slopeAtEnd = derivative(p, p.max);
+      const denom = Math.sqrt(1 + slopeAtEnd * slopeAtEnd);
+      ride.vx = LIFT_SPEED / denom;
+      ride.vy = LIFT_SPEED * slopeAtEnd / denom;
+      ride.state = "airborne";
+      ride.message = "Track ended";
+      showRideWarning("TRACK ENDED — the lift hill ended before the full course was built.");
+      return;
+    }
+
+    ride.state = "complete";
+    ride.message = "Completed";
+    el("statusText").textContent = "Coaster finished the full course.";
+    return;
+  }
+
+  let v = speedFromHeight(y, ride.energyHeight);
 
   // If numerical drift lands exactly at/just beyond an energy turning point,
   // use the same stable reversal helper instead of toggling direction in place.
@@ -1097,7 +1211,7 @@ function stepTrack(dt) {
   const localCandidateX = Math.max(p.min, Math.min(p.max, nextX));
   if (Math.abs(localCandidateX - x) > 1e-12) {
     const candidateY = p.eval(localCandidateX);
-    const candidateV = speedFromHeight(candidateY, analysis.y0);
+    const candidateV = speedFromHeight(candidateY, ride.energyHeight);
 
     if (!Number.isFinite(candidateV)) {
       reverseAtTurningPoint(p, x, localCandidateX);
@@ -1113,7 +1227,7 @@ function stepTrack(dt) {
       const joint = analysis.joints[i];
       ride.x = p.max;
       ride.y = p.eval(p.max);
-      ride.speed = speedFromHeight(ride.y, analysis.y0);
+      ride.speed = speedFromHeight(ride.y, ride.energyHeight);
 
       if (!Number.isFinite(ride.speed)) {
         reverseAtTurningPoint(p, x, p.max);
@@ -1147,7 +1261,7 @@ function stepTrack(dt) {
     // Final right endpoint.
     ride.x = p.max;
     ride.y = p.eval(p.max);
-    ride.speed = speedFromHeight(ride.y, analysis.y0);
+    ride.speed = speedFromHeight(ride.y, ride.energyHeight);
 
     if (!Number.isFinite(ride.speed)) {
       reverseAtTurningPoint(p, x, p.max);
@@ -1184,7 +1298,7 @@ function stepTrack(dt) {
       const joint = analysis.joints[i - 1];
       ride.x = p.min;
       ride.y = p.eval(p.min);
-      ride.speed = speedFromHeight(ride.y, analysis.y0);
+      ride.speed = speedFromHeight(ride.y, ride.energyHeight);
 
       if (!Number.isFinite(ride.speed)) {
         reverseAtTurningPoint(p, x, p.min);
@@ -1219,7 +1333,7 @@ function stepTrack(dt) {
     // beyond it, so the cart leaves the track rather than being forced forward.
     ride.x = p.min;
     ride.y = p.eval(p.min);
-    ride.speed = speedFromHeight(ride.y, analysis.y0);
+    ride.speed = speedFromHeight(ride.y, ride.energyHeight);
 
     if (!Number.isFinite(ride.speed)) {
       reverseAtTurningPoint(p, x, p.min);
@@ -1307,6 +1421,21 @@ function inspectCatPassedOutByX(x) {
   return false;
 }
 
+function sampleForX(piece, x) {
+  if (!analysis?.samplePoints?.length) return null;
+  let best = null;
+  let bestDx = Infinity;
+  for (const q of analysis.samplePoints) {
+    if (q.piece !== piece) continue;
+    const dx = Math.abs(q.x - x);
+    if (dx < bestDx) {
+      bestDx = dx;
+      best = q;
+    }
+  }
+  return best;
+}
+
 function firstInspectHighGEvent(a, b) {
   const lo = Math.min(a, b) - 0.075;
   const hi = Math.max(a, b) + 0.075;
@@ -1354,7 +1483,8 @@ function inspectAtX(rawX) {
   const p = pieces[i];
   const xx = Math.max(p.min, Math.min(p.max, x));
   const y = p.eval(xx);
-  const v = speedFromHeight(y, analysis.y0);
+  const sample = sampleForX(p, xx);
+  const v = sample ? sample.speed : (p.isLift ? LIFT_SPEED : speedFromEnergyHeight(y, analysis.energyHeight));
 
   ride = {
     state: "inspect",
@@ -1363,12 +1493,13 @@ function inspectAtX(rawX) {
     speed: Number.isFinite(v) ? v : 0,
     vx: 0,
     vy: 0,
-    message: "Inspecting",
+    message: p.isLift ? "Lift hill" : "Inspecting",
     pieceIndex: i,
     direction: x >= previousX ? 1 : -1,
     catPassedOut: inspectCatPassedOutByX(xx),
     undefinedGTimer: 0,
     joltTimer: 0,
+    energyHeight: analysis.energyHeight,
     crossedJoints: new Set()
   };
 
@@ -1417,12 +1548,15 @@ function inspectAtX(rawX) {
   // Other physical warnings when no joint event has priority.
   // ------------------------------------------------------------
   if (!jointEvent) {
-    if (!Number.isFinite(v)) {
+    if (p.isLift) {
+      el("statusText").textContent =
+        `Lift hill preview at x=${fmt(xx,2)} m — the chain is pulling the cart upward at ${fmt(LIFT_SPEED,1)} m/s.`;
+    } else if (!Number.isFinite(v)) {
       el("statusText").textContent =
         `Inspecting x=${fmt(xx,2)} m — the cart does not have enough energy to reach this point.`;
       showRideWarning("NOT PHYSICALLY REACHABLE — insufficient mechanical energy.");
     } else {
-      const ng = normalG(p, xx, v);
+      const ng = sample && Number.isFinite(sample.ng) ? sample.ng : normalG(p, xx, v);
       const contactCrossed =
         analysis.firstContactLoss &&
         inspectCrossedTarget(previousX, x, analysis.firstContactLoss.x, 0.10);
@@ -1483,21 +1617,24 @@ function updateTelemetry() {
   const directionArrow =
     (ride.state === "track" || ride.state === "inspect") && ride.direction === -1 ? " ←" :
     (ride.state === "track" || ride.state === "inspect") ? " →" : "";
-  el("speedReadout").textContent = `${fmt(ride.speed,1)} m/s${directionArrow}`;
+
+  let slope = NaN, ng = NaN;
+  let currentPiece = null;
+  if (ride.state === "track" || ride.state === "complete" || ride.state === "stopped" || ride.state === "inspect") {
+    currentPiece = pieceForX(ride.x);
+    if (currentPiece) {
+      const xx = Math.min(currentPiece.max, Math.max(currentPiece.min, ride.x));
+      slope = derivative(currentPiece, xx);
+      if (Number.isFinite(ride.speed)) ng = Math.max(0, normalG(currentPiece, xx, ride.speed));
+    }
+  }
+
+  const liftTag = currentPiece?.isLift ? " (lift)" : "";
+  el("speedReadout").textContent = `${fmt(ride.speed,1)} m/s${directionArrow}${liftTag}`;
   setTelemetryLevel(
     "speedReadout",
     levelForThreshold(ride.speed, SPEED_YELLOW, SPEED_RED)
   );
-
-  let slope = NaN, ng = NaN;
-  if (ride.state === "track" || ride.state === "complete" || ride.state === "stopped" || ride.state === "inspect") {
-    const p = pieceForX(ride.x);
-    if (p) {
-      const xx = Math.min(p.max, Math.max(p.min, ride.x));
-      slope = derivative(p, xx);
-      if (Number.isFinite(ride.speed)) ng = Math.max(0, normalG(p, xx, ride.speed));
-    }
-  }
   el("slopeReadout").textContent = Number.isFinite(slope) ? fmt(slope,2) : "airborne";
 
   if (ride.undefinedGTimer > 0) {
@@ -1773,13 +1910,49 @@ function drawScene() {
         const xx=sx(q.x), yy=sy(q.y);
         if (!started) { ctx.moveTo(xx,yy); started=true; } else ctx.lineTo(xx,yy);
       }
-      ctx.strokeStyle = "#1c2b47";
-      ctx.lineWidth = 6;
+      ctx.strokeStyle = p.isLift ? "#d79a19" : "#1c2b47";
+      ctx.lineWidth = p.isLift ? 8 : 6;
       ctx.lineCap = "round";
       ctx.stroke();
-      ctx.strokeStyle = "#9aa7ba";
-      ctx.lineWidth = 2;
+      ctx.strokeStyle = p.isLift ? "#fff1b6" : "#9aa7ba";
+      ctx.lineWidth = p.isLift ? 3 : 2;
       ctx.stroke();
+
+      if (p.isLift && pts.length > 8) {
+        ctx.save();
+        ctx.strokeStyle = "#8a5d00";
+        ctx.fillStyle = "#8a5d00";
+        ctx.lineWidth = 1.6;
+        const stride = Math.max(5, Math.floor(pts.length / 10));
+        for (let k = stride; k < pts.length - stride; k += stride) {
+          const prev = pts[Math.max(0, k - 1)];
+          const curr = pts[k];
+          const next = pts[Math.min(pts.length - 1, k + 1)];
+          const ax = sx(prev.x), ay = sy(prev.y);
+          const bx = sx(curr.x), by = sy(curr.y);
+          const cx2 = sx(next.x), cy2 = sy(next.y);
+          const ang = Math.atan2(cy2 - ay, cx2 - ax);
+
+          ctx.save();
+          ctx.translate(bx, by);
+          ctx.rotate(ang);
+          ctx.beginPath();
+          ctx.moveTo(-6, -4);
+          ctx.lineTo(0, 0);
+          ctx.lineTo(-6, 4);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.arc(6, 0, 2.2, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+        }
+
+        const mid = pts[Math.floor(pts.length / 2)];
+        ctx.fillStyle = "rgba(138, 93, 0, 0.9)";
+        ctx.font = "bold 12px sans-serif";
+        ctx.fillText("LIFT", sx(mid.x) + 8, sy(mid.y) - 10);
+        ctx.restore();
+      }
     }
 
     // Joint markers.
@@ -1808,10 +1981,12 @@ function drawScene() {
     const cx=sx(ride.x), cy=sy(ride.y);
     let angle=0;
     let catPassedOut = !!ride.catPassedOut;
+    let cartOnLift = false;
 
     if (ride.state === "track" || ride.state === "complete" || ride.state === "stopped" || ride.state === "inspect") {
       const p=pieceForX(ride.x);
       if (p) {
+        cartOnLift = !!p.isLift;
         const xx = Math.min(p.max, Math.max(p.min, ride.x));
         // Keep the cart upright on the tangent even when traveling left.
         // Direction is shown by motion and the telemetry arrow; rotating by π
@@ -1838,6 +2013,24 @@ function drawScene() {
     ctx.scale(cartDisplayScale, cartDisplayScale);
     ctx.fillStyle = ride.state === "airborne" ? "#c43d4b" : "#3157d5";
     ctx.fillRect(-13,-8,26,13);
+
+    if (cartOnLift) {
+      ctx.strokeStyle = "#ffe08a";
+      ctx.lineWidth = 1.8;
+      ctx.beginPath();
+      ctx.moveTo(-10, -14);
+      ctx.lineTo(-3, -14);
+      ctx.moveTo(1, -14);
+      ctx.lineTo(8, -14);
+      ctx.stroke();
+      ctx.fillStyle = "#ffe08a";
+      ctx.beginPath();
+      ctx.moveTo(9, -17);
+      ctx.lineTo(14, -14);
+      ctx.lineTo(9, -11);
+      ctx.closePath();
+      ctx.fill();
+    }
 
     // Black cat rider scales with the cart.
     drawCartCat(ctx, catPassedOut);

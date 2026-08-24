@@ -35,6 +35,7 @@
             <option value="discontinuous">Discontinuous / derails</option>
             <option value="airborne">Loses contact / airborne</option>
             <option value="endsEarly">Track ends early</option>
+            <option value="liftHill">Lift hill coaster</option>
           </select>
           <button id="exampleBtn" class="secondary" type="button">Load example</button>
         </div>
@@ -43,6 +44,12 @@
       <textarea id="equations" spellcheck="false" placeholder="Example:
 y=35-0.02(x-20)^2 {0<=x<=40}
 y=... {40<=x<=70}"></textarea>
+        <div class="lift-help">
+          <strong>Optional lift hill:</strong>
+          Add a capital <code>L</code> after the <strong>first</strong> function only.
+          Example: <code>y=5+0.5x {0&lt;=x&lt;=40} L</code>.
+          The chain pulls the cart uphill at 3.0 m/s, then releases it to normal coaster physics.
+        </div>
 
       <div class="hint">
         <strong>Desmos paste support:</strong> common LaTeX-style input such as
