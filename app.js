@@ -1,4 +1,4 @@
-/* Calculus Coaster Simulator v3.4 — Chromebook Deployment Build
+/* Calculus Coaster Simulator v3.5 — Chromebook Deployment Build
    Teacher-editable constants are grouped here.
 */
 const COURSE_LENGTH = 100;       // meters
@@ -21,7 +21,8 @@ const GFORCE_RED = 4.0;          // g
 const X_JOINT_TOL = 0.002;       // meters
 const Y_JOINT_TOL = 0.05;        // meters
 const SLOPE_JOINT_TOL = 0.03;    // slope units
-const CONTACT_G_EPS = 0.015;     // prevents numerical chatter around zero normal force
+const AIRTIME_G_EPS = 0.03;      // ignore tiny numerical negative-G chatter near zero
+const AIRBORNE_G_THRESHOLD = -0.50; // g; restrained airtime above this, launch only below it
 const TURN_NUDGE_X = 0.015;       // meters; moves cart just inside reachable region after reversal
 
 const SAMPLE_COUNT = 1800;
@@ -76,7 +77,7 @@ const examples = {
   ].join("\n"),
 
   liftHill: [
-    "y=5+0.6x {0<=x<=40} L",
+    "y=5+24*(3*(x/40)^2-2*(x/40)^3) {0<=x<=40} L",
     "y=29-16*(3*((x-40)/25)^2-2*((x-40)/25)^3) {40<=x<=65}",
     "y=13+10*(3*((x-65)/20)^2-2*((x-65)/20)^3) {65<=x<=85}",
     "y=23-6*(3*((x-85)/15)^2-2*((x-85)/15)^3) {85<=x<=100}"
@@ -643,6 +644,7 @@ function analyzeTrack() {
   let maxSpeed = 0;
   let energyOK = true;
   let firstEnergyFailure = null;
+  let firstAirtime = null;
   let firstContactLoss = null;
   let samplePoints = [];
 
@@ -679,7 +681,10 @@ function analyzeTrack() {
         sample.ng = ng;
         maxPredG = Math.max(maxPredG, ng);
         minPredG = Math.min(minPredG, ng);
-        if (!onLift && !firstContactLoss && ng < -CONTACT_G_EPS && x > p.min + 0.03 && x < p.max - 0.03) {
+        if (!onLift && !firstAirtime && ng < -AIRTIME_G_EPS && x > p.min + 0.03 && x < p.max - 0.03) {
+          firstAirtime = {x,y,ng};
+        }
+        if (!onLift && !firstContactLoss && ng < AIRBORNE_G_THRESHOLD && x > p.min + 0.03 && x < p.max - 0.03) {
           firstContactLoss = {x,y,ng};
         }
       }
@@ -716,7 +721,7 @@ function analyzeTrack() {
 
   analysis = {
     joints, continuous, smooth, coverageOK, minY, maxY, heightOK, extrema, extremaOK,
-    y0, energyOK, firstEnergyFailure, maxSpeed, maxPredG, minPredG, firstContactLoss,
+    y0, energyOK, firstEnergyFailure, maxSpeed, maxPredG, minPredG, firstAirtime, firstContactLoss,
     predictedComplete, samplePoints, singlePieceEndsEarly,
     hasLift, liftEndX, liftReleaseY, liftSpeed: hasLift ? LIFT_SPEED : null, energyHeight
   };
@@ -831,10 +836,24 @@ function renderReport() {
     `${fmt(a.maxSpeed,1)} m/s`
   );
 
+  if (a.firstAirtime) {
+    addReportRow(
+      "warn",
+      "Airtime predicted",
+      `Negative normal G begins near x=${fmt(a.firstAirtime.x,2)} m. The restraint system keeps the cart on the rail unless the simplified load falls below ${fmt(AIRBORNE_G_THRESHOLD,2)} g.`,
+      `${fmt(a.firstAirtime.ng,2)} g`
+    );
+  }
+
   if (a.firstContactLoss) {
-    addReportRow("fail", "Predicted airborne launch", `The track curves downward too sharply for the available normal force near x=${fmt(a.firstContactLoss.x,2)} m.`, `${fmt(a.firstContactLoss.ng,2)} g`);
+    addReportRow(
+      "fail",
+      "Extreme negative G / airborne launch",
+      `The simplified restraint limit (${fmt(AIRBORNE_G_THRESHOLD,2)} g) is exceeded near x=${fmt(a.firstContactLoss.x,2)} m, so the simulator releases the cart into projectile motion.`,
+      `${fmt(a.firstContactLoss.ng,2)} g`
+    );
   } else {
-    addReportRow("pass", "Track contact check", "No loss of contact predicted before the end of the course.");
+    addReportRow("pass", "Track retention check", `No launch is predicted. Moderate negative G is treated as restrained airtime down to ${fmt(AIRBORNE_G_THRESHOLD,2)} g.`);
   }
 
   if (a.maxPredG > 4) {
@@ -876,6 +895,7 @@ function resetRide() {
     pieceIndex: 0,
     direction: 1,
     catPassedOut: false,
+    inAirtime: false,
     undefinedGTimer: 0,
     joltTimer: 0,
     energyHeight: analysis.energyHeight,
@@ -1004,7 +1024,7 @@ function launchFromTrack(label) {
   if (label === "DERAILED") {
     spawnExplosion(ride.x, ride.y, 0.7, 1.0);
   }
-  showRideWarning(label === "DERAILED" ? "DERAILED — the track is not continuous/differentiable." : "AIRBORNE — the cart lost contact with the track.");
+  showRideWarning(label === "DERAILED" ? "DERAILED — the track is discontinuous." : `AIRBORNE — extreme negative G fell below ${fmt(AIRBORNE_G_THRESHOLD,2)} g.`);
 }
 
 function reachableHeight() {
@@ -1062,7 +1082,7 @@ function reverseAtTurningPoint(piece, xFrom, xToward) {
   ride.x = nudgedX;
   ride.y = piece.eval(nudgedX);
 
-  const nudgedSpeed = speedFromHeight(ride.y, analysis.y0);
+  const nudgedSpeed = speedFromEnergyHeight(ride.y, ride.energyHeight);
   ride.speed = Number.isFinite(nudgedSpeed) ? nudgedSpeed : 0;
 
   const arrow = ride.direction > 0 ? "→" : "←";
@@ -1178,7 +1198,7 @@ function stepTrack(dt) {
     return;
   }
 
-  let v = speedFromHeight(y, ride.energyHeight);
+  let v = speedFromEnergyHeight(y, ride.energyHeight);
 
   // If numerical drift lands exactly at/just beyond an energy turning point,
   // use the same stable reversal helper instead of toggling direction in place.
@@ -1195,9 +1215,24 @@ function stepTrack(dt) {
   ride.y = y;
 
   const ng = normalG(p, x, v);
-  if (ng < -CONTACT_G_EPS && x > p.min + 0.02 && x < p.max - 0.02) {
+  const insidePiece = x > p.min + 0.02 && x < p.max - 0.02;
+  if (ng < AIRBORNE_G_THRESHOLD && insidePiece) {
+    ride.inAirtime = false;
     launchFromTrack("AIRBORNE");
     return;
+  }
+
+  const airtimeNow = ng < -AIRTIME_G_EPS && insidePiece;
+  if (airtimeNow && !ride.inAirtime) {
+    showRideWarning(`AIRTIME — ${fmt(ng,2)} g. The restraint system keeps the cart attached to the rail.`);
+  } else if (!airtimeNow && ride.inAirtime) {
+    const banner = el("warningBanner");
+    if (banner.textContent.startsWith("AIRTIME")) banner.classList.add("hidden");
+    el("statusText").textContent = "Coaster running…";
+  }
+  ride.inAirtime = airtimeNow;
+  if (airtimeNow) {
+    el("statusText").textContent = `AIRTIME near x=${fmt(x,2)} m — negative G, but the cart stays on the rail.`;
   }
 
   const slope = derivative(p, x);
@@ -1211,7 +1246,7 @@ function stepTrack(dt) {
   const localCandidateX = Math.max(p.min, Math.min(p.max, nextX));
   if (Math.abs(localCandidateX - x) > 1e-12) {
     const candidateY = p.eval(localCandidateX);
-    const candidateV = speedFromHeight(candidateY, ride.energyHeight);
+    const candidateV = speedFromEnergyHeight(candidateY, ride.energyHeight);
 
     if (!Number.isFinite(candidateV)) {
       reverseAtTurningPoint(p, x, localCandidateX);
@@ -1227,7 +1262,7 @@ function stepTrack(dt) {
       const joint = analysis.joints[i];
       ride.x = p.max;
       ride.y = p.eval(p.max);
-      ride.speed = speedFromHeight(ride.y, ride.energyHeight);
+      ride.speed = speedFromEnergyHeight(ride.y, ride.energyHeight);
 
       if (!Number.isFinite(ride.speed)) {
         reverseAtTurningPoint(p, x, p.max);
@@ -1261,7 +1296,7 @@ function stepTrack(dt) {
     // Final right endpoint.
     ride.x = p.max;
     ride.y = p.eval(p.max);
-    ride.speed = speedFromHeight(ride.y, ride.energyHeight);
+    ride.speed = speedFromEnergyHeight(ride.y, ride.energyHeight);
 
     if (!Number.isFinite(ride.speed)) {
       reverseAtTurningPoint(p, x, p.max);
@@ -1298,7 +1333,7 @@ function stepTrack(dt) {
       const joint = analysis.joints[i - 1];
       ride.x = p.min;
       ride.y = p.eval(p.min);
-      ride.speed = speedFromHeight(ride.y, ride.energyHeight);
+      ride.speed = speedFromEnergyHeight(ride.y, ride.energyHeight);
 
       if (!Number.isFinite(ride.speed)) {
         reverseAtTurningPoint(p, x, p.min);
@@ -1333,7 +1368,7 @@ function stepTrack(dt) {
     // beyond it, so the cart leaves the track rather than being forced forward.
     ride.x = p.min;
     ride.y = p.eval(p.min);
-    ride.speed = speedFromHeight(ride.y, ride.energyHeight);
+    ride.speed = speedFromEnergyHeight(ride.y, ride.energyHeight);
 
     if (!Number.isFinite(ride.speed)) {
       reverseAtTurningPoint(p, x, p.min);
@@ -1497,6 +1532,7 @@ function inspectAtX(rawX) {
     pieceIndex: i,
     direction: x >= previousX ? 1 : -1,
     catPassedOut: inspectCatPassedOutByX(xx),
+    inAirtime: false,
     undefinedGTimer: 0,
     joltTimer: 0,
     energyHeight: analysis.energyHeight,
@@ -1560,12 +1596,24 @@ function inspectAtX(rawX) {
       const contactCrossed =
         analysis.firstContactLoss &&
         inspectCrossedTarget(previousX, x, analysis.firstContactLoss.x, 0.10);
+      const airtimeCrossed =
+        analysis.firstAirtime &&
+        inspectCrossedTarget(previousX, x, analysis.firstAirtime.x, 0.10);
 
-      if (contactCrossed || ng < -CONTACT_G_EPS) {
+      if (contactCrossed || ng < AIRBORNE_G_THRESHOLD) {
+        const gx = contactCrossed ? analysis.firstContactLoss.x : xx;
         el("statusText").textContent =
-          `Loss of track contact near x=${fmt(contactCrossed ? analysis.firstContactLoss.x : xx,2)} m.`;
-        showRideWarning("AIRBORNE POINT — the cart would lose contact with the rail here.");
+          `Extreme negative G near x=${fmt(gx,2)} m — the cart would become airborne.`;
+        showRideWarning(`AIRBORNE POINT — below the ${fmt(AIRBORNE_G_THRESHOLD,2)} g restraint limit.`);
+      } else if (airtimeCrossed || ng < -AIRTIME_G_EPS) {
+        ride.inAirtime = true;
+        const gx = airtimeCrossed ? analysis.firstAirtime.x : xx;
+        const gv = airtimeCrossed ? analysis.firstAirtime.ng : ng;
+        el("statusText").textContent =
+          `AIRTIME near x=${fmt(gx,2)} m (${fmt(gv,2)} g) — cart stays attached to the rail.`;
+        showRideWarning("AIRTIME — negative G, but the restraint system keeps the cart on the track.");
       } else {
+        ride.inAirtime = false;
         const highGEvent = firstInspectHighGEvent(previousX, x);
         if (highGEvent || Math.max(0, ng) >= CAT_PASS_OUT_G) {
           ride.catPassedOut = true;
@@ -1625,7 +1673,7 @@ function updateTelemetry() {
     if (currentPiece) {
       const xx = Math.min(currentPiece.max, Math.max(currentPiece.min, ride.x));
       slope = derivative(currentPiece, xx);
-      if (Number.isFinite(ride.speed)) ng = Math.max(0, normalG(currentPiece, xx, ride.speed));
+      if (Number.isFinite(ride.speed)) ng = normalG(currentPiece, xx, ride.speed);
     }
   }
 
@@ -1641,11 +1689,16 @@ function updateTelemetry() {
     el("gReadout").textContent = "UNDEFINED";
     setTelemetryLevel("gReadout", "red");
   } else {
-    el("gReadout").textContent = Number.isFinite(ng) ? `${fmt(ng,2)} g` : "0.00 g";
-    setTelemetryLevel(
-      "gReadout",
-      levelForThreshold(Number.isFinite(ng) ? ng : 0, GFORCE_YELLOW, GFORCE_RED)
-    );
+    const gText = Number.isFinite(ng)
+      ? `${fmt(ng,2)} g${ng < -AIRTIME_G_EPS ? " AIRTIME" : ""}`
+      : "0.00 g";
+    el("gReadout").textContent = gText;
+    let gLevel = "green";
+    if (Number.isFinite(ng)) {
+      if (ng < AIRBORNE_G_THRESHOLD || ng >= GFORCE_RED) gLevel = "red";
+      else if (ng < -AIRTIME_G_EPS || ng >= GFORCE_YELLOW) gLevel = "yellow";
+    }
+    setTelemetryLevel("gReadout", gLevel);
   }
 
   const total = Math.max(1, G * Math.max(analysis?.y0 ?? ride.y, ride.y) + INITIAL_SPEED*INITIAL_SPEED/2);
@@ -1969,6 +2022,11 @@ function drawScene() {
       ctx.arc(sx(analysis.firstEnergyFailure.x), sy(analysis.firstEnergyFailure.y), 9, 0, Math.PI*2);
       ctx.strokeStyle="#b7791f"; ctx.lineWidth=4; ctx.stroke();
     }
+    if (analysis.firstAirtime) {
+      ctx.beginPath();
+      ctx.arc(sx(analysis.firstAirtime.x), sy(analysis.firstAirtime.y), 9, 0, Math.PI*2);
+      ctx.strokeStyle="#d69e2e"; ctx.lineWidth=3; ctx.stroke();
+    }
     if (analysis.firstContactLoss) {
       ctx.beginPath();
       ctx.arc(sx(analysis.firstContactLoss.x), sy(analysis.firstContactLoss.y), 10, 0, Math.PI*2);
@@ -2032,12 +2090,29 @@ function drawScene() {
       ctx.fill();
     }
 
-    // Black cat rider scales with the cart.
-    drawCartCat(ctx, catPassedOut);
+    // Black cat rider scales with the cart. During restrained airtime the
+    // rider lifts slightly while the cart itself remains on the rail.
+    if (ride.inAirtime && !catPassedOut) {
+      ctx.save();
+      ctx.translate(0, -4.5);
+      drawCartCat(ctx, false);
+      ctx.restore();
+    } else {
+      drawCartCat(ctx, catPassedOut);
+    }
 
     ctx.fillStyle="#18243b";
     ctx.beginPath(); ctx.arc(-8,7,4,0,Math.PI*2); ctx.arc(8,7,4,0,Math.PI*2); ctx.fill();
     ctx.restore();
+
+    if (ride.inAirtime) {
+      ctx.save();
+      ctx.font = "bold 11px sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillStyle = "#9a6700";
+      ctx.fillText("AIRTIME!", cx, cy - 38 * cartDisplayScale);
+      ctx.restore();
+    }
 
     // Cusp/corner jolt sparks
     if (ride.joltTimer > 0) {
