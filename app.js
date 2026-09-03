@@ -1,4 +1,4 @@
-/* Calculus Coaster Simulator v3.5 — Chromebook Deployment Build
+/* Calculus Coaster Simulator v3.6 — Chromebook Deployment Build
    Teacher-editable constants are grouped here.
 */
 const COURSE_LENGTH = 100;       // meters
@@ -285,15 +285,23 @@ function compileSafeExpression(expr) {
     }
 
     if (token.type === "function") {
-      const lp = take();
-      if (!lp || lp.type !== "lparen") {
-        throw new Error(`Function ${token.value} must use parentheses.`);
+      // Desmos clipboard text may omit parentheses for a single function
+      // argument (for example \ln x or \sin x). Accept both that form
+      // and the existing parenthesized form.
+      if (peek() && peek().type === "lparen") {
+        take();
+        const arg = parseExpression();
+        const rp = take();
+        if (!rp || rp.type !== "rparen") {
+          throw new Error(`Missing ")" after ${token.value}(...).`);
+        }
+        return `${SAFE_FUNCTION_JS[token.value]}(${arg})`;
       }
-      const arg = parseExpression();
-      const rp = take();
-      if (!rp || rp.type !== "rparen") {
-        throw new Error(`Missing ")" after ${token.value}(...).`);
+
+      if (!peek()) {
+        throw new Error(`Function ${token.value} is missing an argument.`);
       }
+      const arg = parseUnary();
       return `${SAFE_FUNCTION_JS[token.value]}(${arg})`;
     }
 
@@ -382,6 +390,9 @@ function extractDomain(line) {
   // Normalize the visual sizing commands and escaped braces first.
   s = s.replace(/\\left|\\right/g, "");
   s = s.replace(/\\\{/g, "{").replace(/\\\}/g, "}");
+  // Desmos may insert an explicit LaTeX spacing command (backslash + space)
+  // immediately before the restriction. Remove it before trimming the equation.
+  s = s.replace(/\\\s+/g, " ");
 
   // Desmos / LaTeX comparison commands.
   s = s.replace(/\\leq?/g, "<=").replace(/\\geq?/g, ">=");

@@ -243,3 +243,9 @@ CHROMEBOOK DEPLOYMENT BUILD
 This edition removes the external math-library CDN request. A restricted
 expression compiler is included directly in app.js so the simulator can be
 served as a self-contained static website.
+
+
+V3.6 BUGFIX — DIRECT DESMOS FUNCTION PASTE
+- Direct Desmos clipboard forms that omit function parentheses now work, including \ln x and \sin x.
+- Existing parenthesized forms such as \cos(x) continue to work.
+- Explicit LaTeX spacing before a domain restriction (backslash + space) is ignored, preventing a second paste error on some Desmos expressions.
